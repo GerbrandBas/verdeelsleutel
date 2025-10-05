@@ -1,0 +1,295 @@
+# Build the full Excel with scenarios A/B/C + Samenvatting (chart)
+import pandas as pd, os
+
+path = "/mnt/data/thuiskopie_verdeelsleutel_scenarios.xlsx"
+
+disciplines = ["Audio", "Audiovisueel", "Geschriften", "Beeld"]
+dragers = ["Desktop/Laptop", "Smartphone", "Tablet", "E-reader", "Externe HDD/NAS"]
+sub_names = ["Audio-cover", "Beeld in AV", "Beeld in geschriften", "Losstaand beeld"]
+
+with pd.ExcelWriter(path, engine="xlsxwriter") as writer:
+    wb = writer.book
+    bold = wb.add_format({'bold': True})
+    percent = wb.add_format({'num_format': '0.00%'})
+    wrap = wb.add_format({'text_wrap': True, 'valign': 'top'})
+    header = wb.add_format({'bold': True, 'bg_color': '#F2F2F2'})
+    
+    # README
+    readme = wb.add_worksheet("README")
+    readme.write("A1", "Thuiskopie – Verdeelsleutel Scenario-tool", bold)
+    readme.write("A3", "Gebruik:", bold)
+    readme.write("A4", "1) Pas parameters aan in 'Parameters' (vectoren, gewichten, dragerfactoren).")
+    readme.write("A5", "2) Bekijk uitkomsten in Scenario_A/B/C.")
+    readme.write("A6", "3) Gebruik 'Samenvatting' om een PDF voor bespreking te exporteren.")
+    readme.write("A8", "Let op: waarden zijn percentages (0–1). Maak som-checks groen (100%).")
+    
+    # Parameters
+    ws = wb.add_worksheet("Parameters")
+    ws.write("A1", "Parameters", bold)
+    
+    # Evidence vectors
+    start = 3
+    ws.write(start, 0, "Evidence-vectoren per discipline (rijnorm = 100%)", bold)
+    ws.write(start+1, 0, "Vector", header)
+    for j, d in enumerate(disciplines):
+        ws.write(start+1, 1+j, d, header)
+    ws.write(start+1, 1+len(disciplines), "Som", header)
+    ev_names = ["Trend (2023)", "Waardering", "Dragerprofiel", "Buitenland"]
+    for i, name in enumerate(ev_names):
+        ws.write(start+2+i, 0, name)
+        for j in range(len(disciplines)):
+            ws.write_number(start+2+i, 1+j, 1/len(disciplines), percent)
+        r = start+2+i+1
+        ws.write_formula(start+2+i, 1+len(disciplines), f"=SUM(B{r}:E{r})", percent)
+    # Forfaitair vector
+    base = start+2+len(ev_names)+2
+    ws.write(base, 0, "Forfaitair vector per discipline (som = 100%)", bold)
+    ws.write(base+1, 0, "Forfaitair")
+    for j in range(len(disciplines)):
+        ws.write_number(base+1, 1+j, 1/len(disciplines), percent)
+    ws.write_formula(base+1, 1+len(disciplines), f"=SUM(B{base+2}:E{base+2})", percent)
+    # Named ranges
+    wb.define_name("TrendVec", f"=Parameters!$B${start+3}:$E${start+3}")
+    wb.define_name("WaarderingVec", f"=Parameters!$B${start+4}:$E${start+4}")
+    wb.define_name("DragerVec", f"=Parameters!$B${start+5}:$E${start+5}")
+    wb.define_name("BuitenlandVec", f"=Parameters!$B${start+6}:$E${start+6}")
+    wb.define_name("ForfaitairVec", f"=Parameters!$B${base+2}:$E${base+2}")
+    
+    # Scenario A weights
+    baseA = base+4
+    ws.write(baseA, 0, "Scenario A – componentgewichten (som = 100%)", bold)
+    comp_names = ["Trend", "Waardering", "Drager", "Buitenland", "Forfaitair"]
+    for i, n in enumerate(comp_names):
+        ws.write(baseA+1+i, 0, n)
+        ws.write_number(baseA+1+i, 1, 0.20, percent)
+    ws.write(baseA+1+len(comp_names), 0, "Som")
+    ws.write_formula(baseA+1+len(comp_names), 1, f"=SUM(B{baseA+2}:B{baseA+1+len(comp_names)})", percent)
+    wb.define_name("A_Weight_Trend",   f"=Parameters!$B${baseA+2}")
+    wb.define_name("A_Weight_Waard",   f"=Parameters!$B${baseA+3}")
+    wb.define_name("A_Weight_Drager",  f"=Parameters!$B${baseA+4}")
+    wb.define_name("A_Weight_Buiten",  f"=Parameters!$B${baseA+5}")
+    wb.define_name("A_Weight_Forfait", f"=Parameters!$B${baseA+6}")
+    
+    # Scenario B weights
+    baseB = baseA+8
+    ws.write(baseB, 0, "Scenario B – bodem & evidence", bold)
+    ws.write(baseB+1, 0, "Bodem – totaal (%)")
+    ws.write_number(baseB+1, 1, 0.10, percent)
+    ws.write(baseB+2, 0, "Evidence – totaal (%)")
+    ws.write_formula(baseB+2, 1, f"=1-B{baseB+2}", percent)
+    ws.write(baseB+4, 0, "Evidence – componentgewichten (som = evidence totaal)")
+    evB_names = ["Trend", "Waardering", "Drager", "Buitenland"]
+    for i, n in enumerate(evB_names):
+        ws.write(baseB+5+i, 0, n)
+        ws.write_formula(baseB+5+i, 1, f"=B{baseB+3}/4", percent)
+    ws.write(baseB+5+len(evB_names), 0, "Som evidence")
+    ws.write_formula(baseB+5+len(evB_names), 1, f"=SUM(B{baseB+6}:B{baseB+9})", percent)
+    wb.define_name("B_Bodem_Total",    f"=Parameters!$B${baseB+2}")
+    wb.define_name("B_Evidence_Total", f"=Parameters!$B${baseB+3}")
+    wb.define_name("B_Weight_Trend",   f"=Parameters!$B${baseB+6}")
+    wb.define_name("B_Weight_Waard",   f"=Parameters!$B${baseB+7}")
+    wb.define_name("B_Weight_Drager",  f"=Parameters!$B${baseB+8}")
+    wb.define_name("B_Weight_Buiten",  f"=Parameters!$B${baseB+9}")
+    
+    # Beeld internal split
+    baseImg = baseB+12
+    ws.write(baseImg, 0, "Beeld – interne uitsplitsing (pp van totaal; genormaliseerd hieronder)", bold)
+    rows = {
+        "Beeld totaal (info)": 0.085,
+        "Audio-cover": 0.0075,
+        "Beeld in AV": 0.0075,
+        "Beeld in geschriften": 0.035,
+        "Losstaand beeld": 0.035
+    }
+    for i, (k, v) in enumerate(rows.items()):
+        ws.write(baseImg+1+i, 0, k)
+        ws.write_number(baseImg+1+i, 1, v, percent)
+    ws.write(baseImg+6, 0, "Som interne beeld (pp)")
+    ws.write_formula(baseImg+6, 1, f"=SUM(B{baseImg+3}:B{baseImg+6})", percent)
+    ws.write(baseImg+8, 0, "Genormaliseerde interne shares binnen Beeld")
+    ws.write(baseImg+9, 0, "Audio-cover")
+    ws.write_formula(baseImg+9, 1, f"=B{baseImg+3}/B{baseImg+7}", percent)
+    ws.write(baseImg+10, 0, "Beeld in AV")
+    ws.write_formula(baseImg+10, 1, f"=B{baseImg+4}/B{baseImg+7}", percent)
+    ws.write(baseImg+11, 0, "Beeld in geschriften")
+    ws.write_formula(baseImg+11, 1, f"=B{baseImg+5}/B{baseImg+7}", percent)
+    ws.write(baseImg+12, 0, "Losstaand beeld")
+    ws.write_formula(baseImg+12, 1, f"=B{baseImg+6}/B{baseImg+7}", percent)
+    wb.define_name("Beeld_Internal_AudioCover",    f"=Parameters!$B${baseImg+10}")
+    wb.define_name("Beeld_Internal_BeeldInAV",     f"=Parameters!$B${baseImg+11}")
+    wb.define_name("Beeld_Internal_BeeldInGeschr", f"=Parameters!$B${baseImg+12}")
+    wb.define_name("Beeld_Internal_Losstaand",     f"=Parameters!$B${baseImg+13}")
+    
+    # Drager factors
+    baseDr = baseImg+16
+    ws.write(baseDr, 0, "Drager-correctiefactoren (2024/2023)", bold)
+    ws.write(baseDr+1, 0, "Drager")
+    ws.write(baseDr+1, 1, "Factor")
+    default_factors = [0.67, 0.65, 0.35, 0.48, 0.46]
+    for i, d in enumerate(dragers):
+        ws.write(baseDr+2+i, 0, d)
+        ws.write_number(baseDr+2+i, 1, default_factors[i])
+    wb.define_name("DragerFactors", f"=Parameters!$B${baseDr+3}:$B${baseDr+2+len(dragers)}")
+    
+    # Baseline 2023 drager split per discipline
+    baseMat = baseDr+2+len(dragers)+2
+    ws.write(baseMat, 0, "Baseline 2023 – dragerverdeling per discipline (som per rij = 100%)", bold)
+    ws.write(baseMat+1, 0, "Discipline")
+    for j, dr in enumerate(dragers):
+        ws.write(baseMat+1, 1+j, dr)
+    ws.write(baseMat+1, 1+len(dragers), "Som")
+    for i, disc in enumerate(disciplines):
+        ws.write(baseMat+2+i, 0, disc)
+        for j in range(len(dragers)):
+            ws.write_number(baseMat+2+i, 1+j, 1/len(dragers), percent)
+        r = baseMat+2+i+1
+        ws.write_formula(baseMat+2+i, 1+len(dragers), f"=SUM(B{r}:F{r})", percent)
+    wb.define_name("BaselineDragerMatrix", f"=Parameters!$B${baseMat+3}:$F${baseMat+2+len(disciplines)}")
+    
+    # Trend 2023 per discipline
+    baseT = baseMat+4+len(disciplines)
+    ws.write(baseT, 0, "Trend 2023 – disciplinevector (som = 100%)", bold)
+    ws.write(baseT+1, 0, "Discipline")
+    ws.write(baseT+1, 1, "Share")
+    for i, disc in enumerate(disciplines):
+        ws.write(baseT+2+i, 0, disc)
+        ws.write_number(baseT+2+i, 1, 1/len(disciplines), percent)
+    ws.write(baseT+2+len(disciplines), 0, "Som")
+    ws.write_formula(baseT+2+len(disciplines), 1, f"=SUM(B{baseT+3}:B{baseT+2+len(disciplines)})", percent)
+    wb.define_name("Trend2023Vec", f"=Parameters!$B${baseT+3}:$B${baseT+2+len(disciplines)}")
+    
+    # Scenario A
+    wsA = wb.add_worksheet("Scenario_A_Hybride_5x20")
+    wsA.write("A1", "Scenario A – Hybride 5×20%", bold)
+    wsA.write("A3", "Discipline", header)
+    wsA.write("B3", "Uitkomst", header)
+    for i, disc in enumerate(disciplines):
+        wsA.write(3+i, 0, disc)
+        idx = i+1
+        formula = (
+            f"=A_Weight_Trend*INDEX(TrendVec,{idx})+"
+            f"A_Weight_Waard*INDEX(WaarderingVec,{idx})+"
+            f"A_Weight_Drager*INDEX(DragerVec,{idx})+"
+            f"A_Weight_Buiten*INDEX(BuitenlandVec,{idx})+"
+            f"A_Weight_Forfait*INDEX(ForfaitairVec,{idx})"
+        )
+        wsA.write_formula(3+i, 1, formula, percent)
+    wsA.write("A9", "Som")
+    wsA.write_formula("B9", "=SUM(B4:B7)", percent)
+    # Beeld internal
+    wsA.write("A11", "Beeld – interne uitsplitsing", bold)
+    wsA.write("A12", "Subcategorie", header)
+    wsA.write("B12", "Share van totaal", header)
+    for i, n in enumerate(sub_names):
+        wsA.write(12+i, 0, n)
+    wsA.write_formula("B13", "=B7*Beeld_Internal_AudioCover", percent)
+    wsA.write_formula("B14", "=B7*Beeld_Internal_BeeldInAV", percent)
+    wsA.write_formula("B15", "=B7*Beeld_Internal_BeeldInGeschr", percent)
+    wsA.write_formula("B16", "=B7*Beeld_Internal_Losstaand", percent)
+    wsA.write("A17", "Som sub")
+    wsA.write_formula("B17", "=SUM(B13:B16)", percent)
+    
+    # Scenario B
+    wsB = wb.add_worksheet("Scenario_B_10pct_Bodem")
+    wsB.write("A1", "Scenario B – 10% bodem + 90% evidence", bold)
+    wsB.write("A3", "Discipline", header)
+    wsB.write("B3", "Uitkomst", header)
+    for i, disc in enumerate(disciplines):
+        wsB.write(3+i, 0, disc)
+        idx = i+1
+        formulaB = (
+            f"=B_Bodem_Total*INDEX(ForfaitairVec,{idx}) + "
+            f"B_Evidence_Total*("
+            f"B_Weight_Trend*INDEX(TrendVec,{idx})+"
+            f"B_Weight_Waard*INDEX(WaarderingVec,{idx})+"
+            f"B_Weight_Drager*INDEX(DragerVec,{idx})+"
+            f"B_Weight_Buiten*INDEX(BuitenlandVec,{idx})"
+            f")"
+        )
+        wsB.write_formula(3+i, 1, formulaB, percent)
+    wsB.write("A9", "Som")
+    wsB.write_formula("B9", "=SUM(B4:B7)", percent)
+    # Beeld internal
+    wsB.write("A11", "Beeld – interne uitsplitsing", bold)
+    wsB.write("A12", "Subcategorie", header)
+    wsB.write("B12", "Share van totaal", header)
+    for i, n in enumerate(sub_names):
+        wsB.write(12+i, 0, n)
+    wsB.write_formula("B13", "=B7*Beeld_Internal_AudioCover", percent)
+    wsB.write_formula("B14", "=B7*Beeld_Internal_BeeldInAV", percent)
+    wsB.write_formula("B15", "=B7*Beeld_Internal_BeeldInGeschr", percent)
+    wsB.write_formula("B16", "=B7*Beeld_Internal_Losstaand", percent)
+    wsB.write("A17", "Som sub")
+    wsB.write_formula("B17", "=SUM(B13:B16)", percent)
+    
+    # Scenario C
+    wsC = wb.add_worksheet("Scenario_C_TrendPlus")
+    wsC.write("A1", "Scenario C – Trend-plus met dragercorrectie", bold)
+    wsC.write("A3", "Discipline", header)
+    wsC.write("B3", "Multiplier (SUMPRODUCT)", header)
+    wsC.write("C3", "Raw share", header)
+    wsC.write("D3", "Uitkomst (genormaliseerd)", header)
+    for i, disc in enumerate(disciplines):
+        wsC.write(3+i, 0, disc)
+        wsC.write_formula(3+i, 1, f"=SUMPRODUCT(INDEX(BaselineDragerMatrix,{i+1},0), DragerFactors)")
+        wsC.write_formula(3+i, 2, f"=INDEX(Trend2023Vec,{i+1})*B{4+i}", percent)
+        wsC.write_formula(3+i, 3, f"=C{4+i}/SUM(C4:C7)", percent)
+    wsC.write("A9", "Som raw")
+    wsC.write_formula("C9", "=SUM(C4:C7)", percent)
+    wsC.write("A10", "Som uitkomst")
+    wsC.write_formula("D10", "=SUM(D4:D7)", percent)
+    # Beeld internal
+    wsC.write("A12", "Beeld – interne uitsplitsing", bold)
+    wsC.write("A13", "Subcategorie", header)
+    wsC.write("B13", "Share van totaal", header)
+    for i, n in enumerate(sub_names):
+        wsC.write(13+i, 0, n)
+    wsC.write_formula("B14", "=D7*Beeld_Internal_AudioCover", percent)
+    wsC.write_formula("B15", "=D7*Beeld_Internal_BeeldInAV", percent)
+    wsC.write_formula("B16", "=D7*Beeld_Internal_BeeldInGeschr", percent)
+    wsC.write_formula("B17", "=D7*Beeld_Internal_Losstaand", percent)
+    wsC.write("A18", "Som sub")
+    wsC.write_formula("B18", "=SUM(B14:B17)", percent)
+    
+    # Samenvatting
+    wsS = wb.add_worksheet("Samenvatting")
+    wsS.write("A1", "Samenvatting – discipline-shares per scenario", bold)
+    wsS.write_row("A3", ["Discipline", "Scenario A", "Scenario B", "Scenario C"], header)
+    for i, disc in enumerate(disciplines):
+        wsS.write(3+i, 0, disc)
+        wsS.write_formula(3+i, 1, f"='Scenario_A_Hybride_5x20'!B{4+i}", percent)
+        wsS.write_formula(3+i, 2, f"='Scenario_B_10pct_Bodem'!B{4+i}", percent)
+        wsS.write_formula(3+i, 3, f"='Scenario_C_TrendPlus'!D{4+i}", percent)
+    wsS.write("A8", "Som", bold)
+    wsS.write_formula("B8", "=SUM(B4:B7)", percent)
+    wsS.write_formula("C8", "=SUM(C4:C7)", percent)
+    wsS.write_formula("D8", "=SUM(D4:D7)", percent)
+    
+    # Chart
+    chart = wb.add_chart({'type': 'column'})
+    chart.add_series({
+        'name':       "Scenario A",
+        'categories': "=Samenvatting!$A$4:$A$7",
+        'values':     "=Samenvatting!$B$4:$B$7",
+        'data_labels': {'value': True},
+    })
+    chart.add_series({
+        'name':       "Scenario B",
+        'categories': "=Samenvatting!$A$4:$A$7",
+        'values':     "=Samenvatting!$C$4:$C$7",
+        'data_labels': {'value': True},
+    })
+    chart.add_series({
+        'name':       "Scenario C",
+        'categories': "=Samenvatting!$A$4:$A$7",
+        'values':     "=Samenvatting!$D$4:$D$7",
+        'data_labels': {'value': True},
+    })
+    chart.set_title({'name': 'Discipline-shares per scenario'})
+    chart.set_x_axis({'name': 'Discipline'})
+    chart.set_y_axis({'name': 'Share', 'major_gridlines': {'visible': False}})
+    chart.set_legend({'position': 'bottom'})
+    wsS.insert_chart('F3', chart, {'x_scale': 1.1, 'y_scale': 1.1})
+
+# Confirm file existence
+os.path.exists(path), os.path.getsize(path), path
