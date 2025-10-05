@@ -3,12 +3,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
-import matplotlib.pyplot as plt
+import json
 
 st.set_page_config(page_title="Thuiskopie – Verdeelsleutel Scenario-tool", layout="wide")
 
 st.title("Thuiskopie – Verdeelsleutel Scenario-tool")
-st.caption("Interactieve rekenhulp voor scenario's A (Hybride 5×20), B (10% bodem) en C (Trend-plus met dragercorrectie)")
+st.caption("Interactieve rekenhulp voor scenario's A (Hybride 5×20), B (10% bodem) en C (Trend-plus met dragercorrectie) – zonder matplotlib dependency")
 
 # --- Setup ---
 disciplines = ["Audio", "Audiovisueel", "Geschriften", "Beeld"]
@@ -25,9 +25,6 @@ def normalize_vec(s):
     if total == 0:
         return s
     return s / total
-
-def vector_from_editor(df, row_name):
-    return df.loc[row_name, disciplines]
 
 # --- Sidebar parameters ---
 st.sidebar.header("Parameters")
@@ -114,27 +111,19 @@ default_trend2023 = pd.Series([0.25, 0.25, 0.25, 0.25], index=disciplines)
 trend2023 = st.sidebar.data_editor(default_trend2023.to_frame().T, num_rows="fixed", use_container_width=True, key="trend2023").iloc[0]
 trend2023 = normalize_vec(trend2023)
 
-# Convenience: expose vectors
+# Convenience vectors
 trend_vec      = evidence_vectors.loc["Trend (2023)"]
 waardering_vec = evidence_vectors.loc["Waardering"]
 drager_vec     = evidence_vectors.loc["Dragerprofiel"]
 buitenland_vec = evidence_vectors.loc["Buitenland"]
 
 # --- Calculations ---
-# Scenario A: sum_i A_weight[i] * vector[i]
-A_components = [
-    trend_vec, waardering_vec, drager_vec, buitenland_vec, forfaitair_series
-]
-A_result = (
-    A_components[0] * A_weights[0] +
-    A_components[1] * A_weights[1] +
-    A_components[2] * A_weights[2] +
-    A_components[3] * A_weights[3] +
-    A_components[4] * A_weights[4]
-)
+# Scenario A
+A_components = [trend_vec, waardering_vec, drager_vec, buitenland_vec, forfaitair_series]
+A_result = sum(comp * w for comp, w in zip(A_components, [*np.array([A_Trend, A_Waard, A_Drager, A_Buiten, A_Forfait])]))
 A_result = normalize_vec(A_result)
 
-# Scenario B: bodem * forfaitair + evidence_total * (sum evidence weights * vectors)
+# Scenario B
 B_result = (
     forfaitair_series * B_bodem +
     trend_vec      * B_weights[0] +
@@ -144,18 +133,18 @@ B_result = (
 )
 B_result = normalize_vec(B_result)
 
-# Scenario C: multiplier per discipline = sumproduct(row, drager_factors); raw = trend2023 * multiplier; normalize
+# Scenario C
 multipliers = (baseline_matrix * drager_factors).sum(axis=1)
 C_raw = trend2023 * multipliers
 C_result = C_raw / C_raw.sum() if C_raw.sum() != 0 else C_raw
 
-# Beeld sub-splits (apply to each scenario's Beeld share)
+# Beeld sub-splits
 def beeld_breakdown(beeld_share):
     return pd.Series({
-        "Audio-cover":        beeld_share * beeld_internal["Audio-cover"],
-        "Beeld in AV":        beeld_share * beeld_internal["Beeld in AV"],
+        "Audio-cover":          beeld_share * beeld_internal["Audio-cover"],
+        "Beeld in AV":          beeld_share * beeld_internal["Beeld in AV"],
         "Beeld in geschriften": beeld_share * beeld_internal["Beeld in geschriften"],
-        "Losstaand beeld":    beeld_share * beeld_internal["Losstaand beeld"],
+        "Losstaand beeld":      beeld_share * beeld_internal["Losstaand beeld"],
     })
 
 A_beeld = beeld_breakdown(A_result["Beeld"])
@@ -167,31 +156,21 @@ colA, colB, colC = st.columns(3)
 with colA:
     st.subheader("Scenario A – Hybride 5×20")
     st.dataframe(A_result.to_frame("Share"), use_container_width=True)
-    # Chart
-    fig, ax = plt.subplots()
-    ax.bar(A_result.index, A_result.values)
-    ax.set_title("Scenario A – Shares per discipline")
-    st.pyplot(fig)
+    st.bar_chart(A_result)
     st.caption("Beeld – interne uitsplitsing")
     st.dataframe(A_beeld.to_frame("Share"), use_container_width=True)
 
 with colB:
     st.subheader("Scenario B – 10% bodem + evidence")
     st.dataframe(B_result.to_frame("Share"), use_container_width=True)
-    fig2, ax2 = plt.subplots()
-    ax2.bar(B_result.index, B_result.values)
-    ax2.set_title("Scenario B – Shares per discipline")
-    st.pyplot(fig2)
+    st.bar_chart(B_result)
     st.caption("Beeld – interne uitsplitsing")
     st.dataframe(B_beeld.to_frame("Share"), use_container_width=True)
 
 with colC:
     st.subheader("Scenario C – Trend-plus (dragercorrectie)")
     st.dataframe(C_result.to_frame("Share"), use_container_width=True)
-    fig3, ax3 = plt.subplots()
-    ax3.bar(C_result.index, C_result.values)
-    ax3.set_title("Scenario C – Shares per discipline")
-    st.pyplot(fig3)
+    st.bar_chart(C_result)
     st.caption("Beeld – interne uitsplitsing")
     st.dataframe(C_beeld.to_frame("Share"), use_container_width=True)
 
@@ -212,7 +191,7 @@ results_pack = {
     "config": {
         "evidence_vectors": evidence_vectors.to_dict(),
         "forfaitair": forfaitair_series.to_dict(),
-        "A_weights": A_weights.tolist(),
+        "A_weights": [A_Trend, A_Waard, A_Drager, A_Buiten, A_Forfait],
         "B_bodem": B_bodem,
         "B_weights": B_weights.tolist(),
         "beeld_internal": beeld_internal.to_dict(),
@@ -226,7 +205,6 @@ json_bytes.write(json.dumps(results_pack, indent=2).encode("utf-8"))
 json_bytes.seek(0)
 st.download_button("Download resultaten + config (JSON)", data=json_bytes, file_name="thuiskopie_scenario_results.json", mime="application/json")
 
-# Individual CSVs
 to_csv_download(A_result.to_frame("Share"), "Scenario_A_shares")
 to_csv_download(B_result.to_frame("Share"), "Scenario_B_shares")
 to_csv_download(C_result.to_frame("Share"), "Scenario_C_shares")
@@ -235,4 +213,4 @@ to_csv_download(B_beeld.to_frame("Share"), "Scenario_B_beeld_sub")
 to_csv_download(C_beeld.to_frame("Share"), "Scenario_C_beeld_sub")
 
 st.markdown("---")
-st.caption("Tip: sla je configuratie als JSON op, zodat je exact dezelfde parameters later kunt herladen (vervolgversie van de app kan import ondersteunen).")
+st.caption("Deze versie gebruikt Streamlit's eigen grafieken (geen matplotlib).")
