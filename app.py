@@ -1,216 +1,236 @@
 
-import streamlit as st
+import io
+import math
 import pandas as pd
 import numpy as np
-import io
-import json
+import matplotlib.pyplot as plt
+import streamlit as st
 
-st.set_page_config(page_title="Thuiskopie – Verdeelsleutel Scenario-tool", layout="wide")
+from openpyxl import load_workbook
 
-st.title("Thuiskopie – Verdeelsleutel Scenario-tool")
-st.caption("Interactieve rekenhulp voor scenario's A (Hybride 5×20), B (10% bodem) en C (Trend-plus met dragercorrectie) – zonder matplotlib dependency")
+st.set_page_config(page_title="Thuiskopie Verdeelsleutel Simulator", layout="wide")
 
-# --- Setup ---
-disciplines = ["Audio", "Audiovisueel", "Geschriften", "Beeld"]
-dragers = ["Desktop/Laptop", "Smartphone", "Tablet", "E-reader", "Externe HDD/NAS"]
+st.title("Thuiskopie Verdeelsleutel — Scenario A/B/C • met stabilisatie & 25% beeld-target")
 
-def normalize_rowwise(df):
-    df = df.copy()
-    df = df.apply(lambda r: r / (r.sum() if r.sum() != 0 else 1), axis=1)
-    return df
+st.markdown("""
+Gebruik dit hulpmiddel om de **disciplineverdeling** te simuleren o.b.v. je Excel-model
+(**Parameters**, **Baseline**, **Invoer_2023**). De app leest standaard het meegeleverde modelbestand,
+maar je kunt ook een eigen Excel uploaden met dezelfde sheet- en veldnamen.
+""")
 
-def normalize_vec(s):
-    s = s.copy()
-    total = s.sum()
-    if total == 0:
-        return s
-    return s / total
+# Load model (default or user upload)
+default_model_path = "Thuiskopie_model.xlsx"
+uploaded = st.file_uploader("Upload je Excel-model (optioneel)", type=["xlsx"])
 
-# --- Sidebar parameters ---
-st.sidebar.header("Parameters")
+def load_workbook_from_bytes(b):
+    # Save to buffer file because openpyxl expects a file path or file-like object
+    bio = io.BytesIO(b.read()) if hasattr(b, "read") else io.BytesIO(b)
+    return load_workbook(bio, data_only=True)
 
-# Evidence vectors editor
-default_vectors = pd.DataFrame(
-    {
-        "Audio":        [0.25, 0.25, 0.25, 0.25],
-        "Audiovisueel": [0.25, 0.25, 0.25, 0.25],
-        "Geschriften":  [0.25, 0.25, 0.25, 0.25],
-        "Beeld":        [0.25, 0.25, 0.25, 0.25],
-    },
-    index=["Trend (2023)", "Waardering", "Dragerprofiel", "Buitenland"]
-)
-st.sidebar.subheader("Evidence-vectoren per discipline")
-evidence_vectors = st.sidebar.data_editor(
-    default_vectors, use_container_width=True, num_rows="fixed", key="evidence_vectors"
-)
-evidence_vectors = normalize_rowwise(evidence_vectors)
+if uploaded is not None:
+    wb = load_workbook_from_bytes(uploaded)
+else:
+    wb = load_workbook(default_model_path, data_only=True)
 
-# Forfaitair vector
-default_forfaitair = pd.Series([0.25, 0.25, 0.25, 0.25], index=disciplines, name="Forfaitair")
-st.sidebar.subheader("Forfaitair vector per discipline")
-forfaitair_series = st.sidebar.data_editor(
-    default_forfaitair.to_frame().T, use_container_width=True, num_rows="fixed", key="forfaitair_vector"
-)
-forfaitair_series = normalize_rowwise(forfaitair_series).iloc[0]
+# Read parameters
+ws_params = wb["Parameters"]
+def get_param(name, default=None):
+    for r in range(2, ws_params.max_row+1):
+        if ws_params.cell(row=r, column=1).value == name:
+            val = ws_params.cell(row=r, column=3).value
+            return float(val) if isinstance(val, (int, float)) or (isinstance(val,str) and val.replace('.','',1).isdigit()) else val
+    return default
 
-# Scenario A weights
-st.sidebar.subheader("Scenario A – componentgewichten (som = 100%)")
-A_Trend   = st.sidebar.number_input("Trend",     min_value=0.0, max_value=1.0, value=0.20, step=0.01, format="%.2f")
-A_Waard   = st.sidebar.number_input("Waardering",min_value=0.0, max_value=1.0, value=0.20, step=0.01, format="%.2f")
-A_Drager  = st.sidebar.number_input("Drager",    min_value=0.0, max_value=1.0, value=0.20, step=0.01, format="%.2f")
-A_Buiten  = st.sidebar.number_input("Buitenland",min_value=0.0, max_value=1.0, value=0.20, step=0.01, format="%.2f")
-A_Forfait = st.sidebar.number_input("Forfaitair",min_value=0.0, max_value=1.0, value=0.20, step=0.01, format="%.2f")
-sumA = A_Trend + A_Waard + A_Drager + A_Buiten + A_Forfait
-if abs(sumA - 1.0) > 1e-9:
-    st.sidebar.warning(f"Som componentgewichten Scenario A = {sumA:.2f} (wordt automatisch genormaliseerd).")
-A_weights = np.array([A_Trend, A_Waard, A_Drager, A_Buiten, A_Forfait])
-A_weights = A_weights / (A_weights.sum() if A_weights.sum() != 0 else 1)
+# Discipline and device setup
+disciplines = ["Audio","AV","Geschriften","Beeld"]
+device_cols = ["Desktop/Laptop","Smartphone","Tablet","E-reader","Externe HDD/NAS"]
 
-# Scenario B weights
-st.sidebar.subheader("Scenario B – bodem & evidence")
-B_bodem = st.sidebar.number_input("Bodem – totaal (%)", min_value=0.0, max_value=1.0, value=0.10, step=0.01, format="%.2f")
-B_evidence_total = max(0.0, 1.0 - B_bodem)
-st.sidebar.caption(f"Evidence – totaal (%) = {B_evidence_total:.2f}")
-B_w_trend  = st.sidebar.number_input("Evidence: Trend",     min_value=0.0, max_value=1.0, value=B_evidence_total/4, step=0.01, format="%.2f")
-B_w_waard  = st.sidebar.number_input("Evidence: Waardering",min_value=0.0, max_value=1.0, value=B_evidence_total/4, step=0.01, format="%.2f")
-B_w_drager = st.sidebar.number_input("Evidence: Drager",    min_value=0.0, max_value=1.0, value=B_evidence_total/4, step=0.01, format="%.2f")
-B_w_buiten = st.sidebar.number_input("Evidence: Buitenland",min_value=0.0, max_value=1.0, value=B_evidence_total/4, step=0.01, format="%.2f")
-sumB_evidence = B_w_trend + B_w_waard + B_w_drager + B_w_buiten
-if abs(sumB_evidence - B_evidence_total) > 1e-9:
-    st.sidebar.warning(f"Som evidence-componenten = {sumB_evidence:.2f} (wordt automatisch geschaald naar {B_evidence_total:.2f}).")
-B_weights_raw = np.array([B_w_trend, B_w_waard, B_w_drager, B_w_buiten])
-scale = (B_evidence_total / sumB_evidence) if sumB_evidence > 0 else 0
-B_weights = B_weights_raw * scale
+# Baseline (trend shares + device matrix)
+ws_base = wb["Baseline"]
+T = {}
+for i, d in enumerate(disciplines):
+    v = ws_base.cell(row=5+i, column=2).value  # B5..B8
+    T[d] = float(v)/100.0
 
-# Beeld interne shares (genormaliseerd binnen Beeld = 100%)
-st.sidebar.subheader("Beeld – interne shares (binnen Beeld = 100%)")
-default_beeld_internal = pd.Series(
-    [0.0882352941, 0.0882352941, 0.4117647059, 0.4117647059],
-    index=["Audio-cover", "Beeld in AV", "Beeld in geschriften", "Losstaand beeld"]
-)
-beeld_internal = st.sidebar.data_editor(default_beeld_internal.to_frame().T, num_rows="fixed", use_container_width=True, key="beeld_internal")
-beeld_internal = normalize_rowwise(beeld_internal).iloc[0]
-
-# Drager factors
-st.sidebar.subheader("Drager-correctiefactoren (2024/2023)")
-default_drager_factors = pd.Series([0.67, 0.65, 0.35, 0.48, 0.46], index=dragers)
-drager_factors = st.sidebar.data_editor(default_drager_factors.to_frame().T, num_rows="fixed", use_container_width=True, key="drager_factors").iloc[0]
-
-# Baseline 2023 dragerverdeling per discipline (rijsom = 100%)
-st.sidebar.subheader("Baseline 2023 – dragerverdeling per discipline")
-default_base = pd.DataFrame(
-    np.full((len(disciplines), len(dragers)), 1/len(dragers)),
-    index=disciplines, columns=dragers
-)
-baseline_matrix = st.sidebar.data_editor(default_base, use_container_width=True, key="baseline_matrix")
-baseline_matrix = normalize_rowwise(baseline_matrix)
-
-# Trend 2023 discipline vector
-st.sidebar.subheader("Trend 2023 – disciplinevector")
-default_trend2023 = pd.Series([0.25, 0.25, 0.25, 0.25], index=disciplines)
-trend2023 = st.sidebar.data_editor(default_trend2023.to_frame().T, num_rows="fixed", use_container_width=True, key="trend2023").iloc[0]
-trend2023 = normalize_vec(trend2023)
-
-# Convenience vectors
-trend_vec      = evidence_vectors.loc["Trend (2023)"]
-waardering_vec = evidence_vectors.loc["Waardering"]
-drager_vec     = evidence_vectors.loc["Dragerprofiel"]
-buitenland_vec = evidence_vectors.loc["Buitenland"]
-
-# --- Calculations ---
-# Scenario A
-A_components = [trend_vec, waardering_vec, drager_vec, buitenland_vec, forfaitair_series]
-A_result = sum(comp * w for comp, w in zip(A_components, [*np.array([A_Trend, A_Waard, A_Drager, A_Buiten, A_Forfait])]))
-A_result = normalize_vec(A_result)
-
-# Scenario B
-B_result = (
-    forfaitair_series * B_bodem +
-    trend_vec      * B_weights[0] +
-    waardering_vec * B_weights[1] +
-    drager_vec     * B_weights[2] +
-    buitenland_vec * B_weights[3]
-)
-B_result = normalize_vec(B_result)
-
-# Scenario C
-multipliers = (baseline_matrix * drager_factors).sum(axis=1)
-C_raw = trend2023 * multipliers
-C_result = C_raw / C_raw.sum() if C_raw.sum() != 0 else C_raw
-
-# Beeld sub-splits
-def beeld_breakdown(beeld_share):
-    return pd.Series({
-        "Audio-cover":          beeld_share * beeld_internal["Audio-cover"],
-        "Beeld in AV":          beeld_share * beeld_internal["Beeld in AV"],
-        "Beeld in geschriften": beeld_share * beeld_internal["Beeld in geschriften"],
-        "Losstaand beeld":      beeld_share * beeld_internal["Losstaand beeld"],
-    })
-
-A_beeld = beeld_breakdown(A_result["Beeld"])
-B_beeld = beeld_breakdown(B_result["Beeld"])
-C_beeld = beeld_breakdown(C_result["Beeld"])
-
-# --- Display ---
-colA, colB, colC = st.columns(3)
-with colA:
-    st.subheader("Scenario A – Hybride 5×20")
-    st.dataframe(A_result.to_frame("Share"), use_container_width=True)
-    st.bar_chart(A_result)
-    st.caption("Beeld – interne uitsplitsing")
-    st.dataframe(A_beeld.to_frame("Share"), use_container_width=True)
-
-with colB:
-    st.subheader("Scenario B – 10% bodem + evidence")
-    st.dataframe(B_result.to_frame("Share"), use_container_width=True)
-    st.bar_chart(B_result)
-    st.caption("Beeld – interne uitsplitsing")
-    st.dataframe(B_beeld.to_frame("Share"), use_container_width=True)
-
-with colC:
-    st.subheader("Scenario C – Trend-plus (dragercorrectie)")
-    st.dataframe(C_result.to_frame("Share"), use_container_width=True)
-    st.bar_chart(C_result)
-    st.caption("Beeld – interne uitsplitsing")
-    st.dataframe(C_beeld.to_frame("Share"), use_container_width=True)
-
-# Downloads
-def to_csv_download(df, name):
-    csv = df.to_csv().encode("utf-8")
-    st.download_button(f"Download {name} (CSV)", data=csv, file_name=f"{name}.csv", mime="text/csv")
-
-st.markdown("---")
-st.subheader("Downloads")
-results_pack = {
-    "A_result": A_result.to_dict(),
-    "B_result": B_result.to_dict(),
-    "C_result": C_result.to_dict(),
-    "A_beeld": A_beeld.to_dict(),
-    "B_beeld": B_beeld.to_dict(),
-    "C_beeld": C_beeld.to_dict(),
-    "config": {
-        "evidence_vectors": evidence_vectors.to_dict(),
-        "forfaitair": forfaitair_series.to_dict(),
-        "A_weights": [A_Trend, A_Waard, A_Drager, A_Buiten, A_Forfait],
-        "B_bodem": B_bodem,
-        "B_weights": B_weights.tolist(),
-        "beeld_internal": beeld_internal.to_dict(),
-        "drager_factors": drager_factors.to_dict(),
-        "baseline_matrix": baseline_matrix.to_dict(),
-        "trend2023": trend2023.to_dict(),
+device_pct = {}
+for i, d in enumerate(disciplines):
+    r = 14+i  # rows 14..17
+    device_pct[d] = {
+        "Desktop/Laptop": float(ws_base.cell(row=r, column=2).value)/100.0,
+        "Smartphone":     float(ws_base.cell(row=r, column=3).value)/100.0,
+        "Tablet":         float(ws_base.cell(row=r, column=4).value)/100.0,
+        "E-reader":       float(ws_base.cell(row=r, column=5).value)/100.0,
+        "Externe HDD/NAS":float(ws_base.cell(row=r, column=6).value)/100.0,
     }
-}
-json_bytes = io.BytesIO()
-json_bytes.write(json.dumps(results_pack, indent=2).encode("utf-8"))
-json_bytes.seek(0)
-st.download_button("Download resultaten + config (JSON)", data=json_bytes, file_name="thuiskopie_scenario_results.json", mime="application/json")
 
-to_csv_download(A_result.to_frame("Share"), "Scenario_A_shares")
-to_csv_download(B_result.to_frame("Share"), "Scenario_B_shares")
-to_csv_download(C_result.to_frame("Share"), "Scenario_C_shares")
-to_csv_download(A_beeld.to_frame("Share"), "Scenario_A_beeld_sub")
-to_csv_download(B_beeld.to_frame("Share"), "Scenario_B_beeld_sub")
-to_csv_download(C_beeld.to_frame("Share"), "Scenario_C_beeld_sub")
+# Invoer_2023 shares
+ws23 = wb["Invoer_2023"]
+share_2023 = {}
+total_2023 = 0.0
+vals_2023 = {}
+for i, d in enumerate(disciplines):
+    v = ws23.cell(row=4+i, column=2).value  # B4..B7 numeric
+    vals_2023[d] = float(v) if v is not None else None
+total_2023 = sum([v for v in vals_2023.values() if v is not None])
+for d in disciplines:
+    share_2023[d] = (vals_2023[d] / total_2023) if (vals_2023[d] is not None and total_2023>0) else np.nan
+
+# Parameters — weights and factors
+w_trend_A   = get_param("w_trend_A", 0.20)
+w_val_A     = get_param("w_valuation_A", 0.20)
+w_drag_A    = get_param("w_drager_A", 0.20)
+w_fore_A    = get_param("w_foreign_A", 0.20)
+w_eq_A      = get_param("w_equal_A", 0.20)
+
+w_trend_B   = get_param("w_trend_B", 0.35)
+w_val_B     = get_param("w_valuation_B", 0.35)
+w_drag_B    = get_param("w_drager_B", 0.20)
+w_fore_B    = get_param("w_foreign_B", 0.10)
+bodem_beeld = get_param("bodem_beeld_percent", 10.0) / 100.0
+
+# Scenario C weights
+w_trend_C   = get_param("w_trend_C", 0.70)
+w_drager_C  = get_param("w_drager_C", 0.30)
+
+# Drager weights
+dev_w_desktop   = get_param("dev_w_desktop", 0.67)
+dev_w_smartphone= get_param("dev_w_smartphone", 0.65)
+dev_w_tablet    = get_param("dev_w_tablet", 0.35)
+dev_w_ereader   = get_param("dev_w_ereader", 0.48)
+dev_w_ext       = get_param("dev_w_ext", 1.00)
+w_sp_beeld      = get_param("w_smartphone_beeld", 1.10)
+
+# Foreign factors
+f_audio = get_param("foreign_factor_audio", 1.0)
+f_av    = get_param("foreign_factor_av", 1.0)
+f_ges   = get_param("foreign_factor_geschriften", 1.0)
+f_bld   = get_param("foreign_factor_beeld", 1.0)
+
+# Valuation factors
+ppk   = get_param("ppk_beeld_factor", 1.20)
+longv = get_param("longevity_factor_beeld", 1.10)
+emb   = get_param("embed_factor_beeld", 1.15)
+cld   = get_param("cloud_correction_beeld", 1.05)
+msg   = get_param("messenger_cache_factor_beeld", 1.05)
+master= get_param("embed_cloud_factor_beeld", 1.00)
+
+# Target
+target = get_param("beeld_target_percent", 25.0)/100.0
+
+# Stability cap
+cap = get_param("stability_cap_pp", 0.10)
+
+# ---- Helpers ----
+def device_factor_of(d):
+    s = device_pct[d]
+    sp_mult = w_sp_beeld if d=="Beeld" else 1.0
+    return (
+        s["Desktop/Laptop"]*dev_w_desktop +
+        s["Smartphone"]*dev_w_smartphone*sp_mult +
+        s["Tablet"]*dev_w_tablet +
+        s["E-reader"]*dev_w_ereader +
+        s["Externe HDD/NAS"]*dev_w_ext
+    )
+
+def normalize_dict(dct):
+    total = sum(dct.values())
+    return {k: (v/total if total>0 else 0.0) for k,v in dct.items()}
+
+# ---- Component shares ----
+# Valuation
+val_factor = {d: 1.0 for d in disciplines}
+val_factor["Beeld"] = ppk * longv * emb * cld * msg * master
+val_raw = {d: T[d]*val_factor[d] for d in disciplines}
+val_norm = normalize_dict(val_raw)
+
+# Drager
+devF = {d: device_factor_of(d) for d in disciplines}
+drager_raw = {d: T[d]*devF[d] for d in disciplines}
+drager_norm = normalize_dict(drager_raw)
+
+# Foreign
+Ffac = {"Audio": f_audio, "AV": f_av, "Geschriften": f_ges, "Beeld": f_bld}
+foreign_raw = {d: T[d]*Ffac[d] for d in disciplines}
+foreign_norm = normalize_dict(foreign_raw)
+
+# Equal
+equal_share = {d: 0.25 for d in disciplines}
+
+# ---- Scenarios ----
+# A
+share_A = {d: w_trend_A*T[d] + w_val_A*val_norm[d] + w_drag_A*drager_norm[d] + w_fore_A*foreign_norm[d] + w_eq_A*equal_share[d] for d in disciplines}
+# normalize to be safe
+share_A = normalize_dict(share_A)
+
+# B (evidence + bodem beeld)
+evidence = {d: w_trend_B*T[d] + w_val_B*val_norm[d] + w_drag_B*drager_norm[d] + w_fore_B*foreign_norm[d] for d in disciplines}
+evidence = normalize_dict(evidence)
+share_B = {}
+for d in disciplines:
+    if d == "Beeld":
+        share_B[d] = bodem_beeld + (1 - bodem_beeld) * evidence[d]
+    else:
+        share_B[d] = (1 - bodem_beeld) * evidence[d]
+# normalize to be sure
+share_B = normalize_dict(share_B)
+
+# C (status-quo 2023 + dragercorrectie 2024)
+dragerC_raw = {}
+for d in disciplines:
+    base = share_2023[d] if not math.isnan(share_2023[d]) else T[d]
+    dragerC_raw[d] = base * devF[d]
+dragerC_norm = normalize_dict(dragerC_raw)
+share_C = {d: w_trend_C*(share_2023[d] if not math.isnan(share_2023[d]) else T[d]) + w_drager_C*dragerC_norm[d] for d in disciplines}
+share_C = normalize_dict(share_C)
+
+# Stabilisatie (Scenario B t.o.v. 2023)
+stab_pre = {}
+for d in disciplines:
+    base = share_2023[d] if not math.isnan(share_2023[d]) else T[d]
+    delta = share_B[d] - base
+    adj = np.sign(delta) * min(abs(delta), cap)
+    stab_pre[d] = base + adj
+stab = normalize_dict(stab_pre)
+
+# ---- Output tables ----
+def to_df(dct, name):
+    return pd.DataFrame({"Discipline": list(dct.keys()), name: list(dct.values())}).set_index("Discipline")
+
+dfA = to_df(share_A, "Scenario A")
+dfB = to_df(share_B, "Scenario B")
+dfC = to_df(share_C, "Scenario C")
+dfS = to_df(stab, "B gestabiliseerd")
+
+df_all = dfA.join(dfB).join(dfS).join(dfC)
+
+st.subheader("Eindverdeling per scenario")
+st.dataframe((df_all*100).round(2))
+
+# Charts
+def plot_series(series, title):
+    fig, ax = plt.subplots()
+    ax.bar(series.index, series.values)
+    ax.set_title(title)
+    ax.set_ylabel("Aandeel")
+    ax.set_ylim(0, 1.0)
+    return fig
+
+col1, col2 = st.columns(2)
+with col1:
+    st.pyplot(plot_series(dfB["Scenario B"], "Scenario B"))
+with col2:
+    st.pyplot(plot_series(dfS["B gestabiliseerd"], "Scenario B (gestabiliseerd)"))
 
 st.markdown("---")
-st.caption("Deze versie gebruikt Streamlit's eigen grafieken (geen matplotlib).")
+st.subheader("Target helper — Beeld")
+st.write(f"Doel (Parameters): **{target*100:.1f}%**")
+st.write(f"Huidig Scenario B — Beeld: **{dfB.loc['Beeld','Scenario B']*100:.2f}%**")
+st.write(f"Gap: **{(target - dfB.loc['Beeld','Scenario B'])*100:.2f} pp**")
+
+# Download CSV
+st.markdown("### Download resultaten")
+csv = (df_all*100).round(3).to_csv().encode("utf-8")
+st.download_button("Download CSV (percentages)", data=csv, file_name="thuiskopie_scenario_resultaten.csv", mime="text/csv")
+
+st.markdown("---")
+st.caption("Let op: Dit is een parametrische simulator. Gebruik voor besluitvorming gevalideerde exports en documenteer parameterkeuzes.")
