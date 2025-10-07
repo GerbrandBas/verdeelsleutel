@@ -1,0 +1,7 @@
+streamlit
+pandas
+numpy
+matplotlib
+openpyxl
+
+# matplotlib gebruikt headless backend (Agg) in de app
